@@ -1,0 +1,20 @@
+# Data manipulation and analysis
+pandas
+numpy
+scikit-learn
+
+# Visualization and EDA
+matplotlib
+seaborn
+
+# Jupyter notebooks for EDA
+jupyter
+
+# Modeling
+xgboost
+
+# NLP and Transformers
+torch
+transformers
+datasets
+peft
