@@ -1,20 +1,23 @@
 # src/data_processing/feature_engineering.py
 
 """
-This script applies feature transformations determined during EDA.
-We assume we have a processed_cohort.csv with basic columns:
-  ['SUBJECT_ID', 'HADM_ID', 'ADMITTIME', 'DISCHTIME', 'GENDER', 'DOB', 'NUM_DIAGNOSES', 'READMITTED_WITHIN_30D']
-We will:
-1. Create an AGE_AT_ADMISSION feature.
-2. Handle missing values in NUM_DIAGNOSES by filling with 0 (as an example).
-3. (Optional) Encode GENDER as binary (0/1).
+This script applies feature transformations for MIMIC-IV data.
+We assume we have a processed_cohort.csv with columns like:
+  [
+    'subject_id', 'hadm_id', 'admittime', 'dischtime', 'anchor_age',
+    'gender', 'num_diagnoses', 'readmitted_within_30d', 'next_admittime'
+  ]
+
+Steps:
+1. Create an AGE_AT_ADMISSION feature (simplified to anchor_age).
+2. Handle missing values in NUM_DIAGNOSES by filling with 0.
+3. Encode gender as binary (0/1).
 4. Save a final feature set ready for modeling.
 """
 
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime
 from src.config.base_config import PROCESSED_DATA_DIR
 
 def engineer_features(input_filename="processed_cohort.csv", output_filename="final_features.csv"):
@@ -22,26 +25,49 @@ def engineer_features(input_filename="processed_cohort.csv", output_filename="fi
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"{input_filename} not found in {PROCESSED_DATA_DIR}")
 
-    df = pd.read_csv(input_path, parse_dates=['ADMITTIME', 'DISCHTIME', 'DOB'])
+    # For MIMIC-IV, 'admittime' and 'dischtime' are typically already in datetime if you created them in preprocess.py
+    # We'll parse them again just in case, ignoring errors if they're already datetimes.
+    df = pd.read_csv(input_path, parse_dates=['admittime', 'dischtime', 'next_admittime'], keep_default_na=True)
 
-    # Feature 1: Age at admission
-    df['AGE_AT_ADMISSION'] = (df['ADMITTIME'] - df['DOB']).dt.days / 365.25
-    # Handle unrealistic ages (some MIMIC patients have masked DOBs leading to extreme ages)
-    # Replace ages > 90 with 90 (censoring age)
-    df.loc[df['AGE_AT_ADMISSION'] > 90, 'AGE_AT_ADMISSION'] = 90
+    # --- 1. AGE_AT_ADMISSION Feature ---
+    # MIMIC-IV does not have a direct DOB. Instead, we have anchor_age (approximate age at first admission).
+    # For a simple approach, just use anchor_age as the age feature.
+    # If you need a more precise age per admission, you could approximate by anchor_year vs admittime year, etc.
+    df['age_at_admission'] = df['anchor_age']
 
-    # Feature 2: Missing values handling for NUM_DIAGNOSES
-    df['NUM_DIAGNOSES'].fillna(0, inplace=True)
+    # Handle unrealistic ages (some might be > 90 due to deidentification policy).
+    # This step is optional. You might choose to leave them as-is or clamp them.
+    df.loc[df['age_at_admission'] > 90, 'age_at_admission'] = 90
 
-    # Feature 3: Encode GENDER
-    # Map M, F to 0,1 for modeling convenience.
-    df['GENDER_ENCODED'] = df['GENDER'].map({'M': 0, 'F': 1})
-    df.drop(columns=['GENDER'], inplace=True)
+    # --- 2. Missing Values for num_diagnoses ---
+    # In MIMIC-IV, the script may have named it 'num_diagnoses' already.
+    # If your code uses a different name, adjust accordingly.
+    if 'num_diagnoses' in df.columns:
+        df['num_diagnoses'] = df['num_diagnoses'].fillna(0)
+    else:
+        df['num_diagnoses'] = 0  # fallback if not present
 
-    # Drop columns that won't be used for modeling (like raw times, DOB)
-    # We keep ADMITTIME, DISCHTIME if we want time-based features. Otherwise, we might remove them.
-    # For now, let's remove them to keep a simpler dataset for baseline:
-    df.drop(columns=['ADMITTIME', 'DISCHTIME', 'DOB', 'NEXT_ADMITTIME'], errors='ignore', inplace=True)
+    # --- 3. Encode Gender (M/F -> 0/1) ---
+    # MIMIC-IV typically uses 'gender' with values "M" or "F".
+    if 'gender' in df.columns:
+        df['gender_encoded'] = df['gender'].map({'M': 0, 'F': 1})
+        df.drop(columns=['gender'], inplace=True)
+    else:
+        df['gender_encoded'] = 0
+
+    # --- 4. Remove Unneeded Columns ---
+    # We remove columns we won't use in modeling, like raw times or anchor_age itself
+    # (you can keep them if you want to do time-based features).
+    # We'll keep 'hadm_id', 'subject_id', and 'readmitted_within_30d' for reference.
+    drop_cols = [
+        'admittime', 
+        'dischtime', 
+        'next_admittime', 
+        'anchor_age'
+    ]
+    for col in drop_cols:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
 
     # Save the engineered features
     output_path = os.path.join(PROCESSED_DATA_DIR, output_filename)

@@ -18,3 +18,10 @@ torch
 transformers
 datasets
 peft
+shap
+
+# RAG
+faiss-cpu
+
+# Interface
+streamlit

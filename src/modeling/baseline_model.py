@@ -25,8 +25,11 @@ def train_baseline_model(input_filename="final_features.csv"):
     df = pd.read_csv(input_path)
     
     # Separate features and target
-    X = df.drop(columns=['READMITTED_WITHIN_30D'])
-    y = df['READMITTED_WITHIN_30D']
+    X = df.drop(columns=['readmitted_within_30d'])
+    cols_to_drop = ["deathtime", "admit_provider_id", "discharge_location", "edregtime", "edouttime"]
+    X = X.drop(columns=cols_to_drop, errors='ignore')
+    X = pd.get_dummies(X, columns=["admission_type", "admission_location", "insurance", "language", "marital_status", "race"],drop_first=True)
+    y = df['readmitted_within_30d']
 
     # Train/test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED, stratify=y)

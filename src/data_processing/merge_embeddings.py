@@ -4,12 +4,12 @@
 Merge the previously engineered structured features with the discharge summary embeddings.
 
 We assume:
-- final_features.csv has HADM_ID column.
-- discharge_embeddings.parquet has columns [HADM_ID, embedding_dim_1, ... embedding_dim_n].
+- final_features.csv has hadm_id column.
+- discharge_embeddings.parquet has columns [hadm_id, embedding_dim_1, ... embedding_dim_n].
 
 We will:
 - Load both files,
-- Merge on HADM_ID,
+- Merge on hadm_id,
 - Save a combined dataset for modeling.
 """
 
@@ -29,13 +29,13 @@ def merge_embeddings(structured_file="final_features.csv", embeddings_file="disc
     df_struct = pd.read_csv(structured_path)
     df_embed = pd.read_parquet(embeddings_path)
 
-    # Merge on HADM_ID
-    df_merged = df_struct.merge(df_embed, on='HADM_ID', how='left')
+    # Merge on hadm_id
+    df_merged = df_struct.merge(df_embed, on='hadm_id', how='left')
     
     # Some admissions might not have a discharge summary (or embedding)
     # We can either drop them or impute embeddings as zeros.
     # For simplicity, fill missing embeddings with 0:
-    embedding_cols = [c for c in df_merged.columns if c not in df_struct.columns and c != 'HADM_ID']
+    embedding_cols = [c for c in df_merged.columns if c not in df_struct.columns and c != 'hadm_id']
     for col in embedding_cols:
         df_merged[col].fillna(0, inplace=True)
 

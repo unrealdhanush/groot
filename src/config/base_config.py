@@ -13,10 +13,10 @@ RAW_DATA_DIR = os.path.join(ROOT_DIR, "data", "raw")
 INTERIM_DATA_DIR = os.path.join(ROOT_DIR, "data", "interim")
 PROCESSED_DATA_DIR = os.path.join(ROOT_DIR, "data", "processed")
 
-ADMISSIONS_FILE = os.path.join(RAW_DATA_DIR, "ADMISSIONS.csv.gz")  
-PATIENTS_FILE = os.path.join(RAW_DATA_DIR, "PATIENTS.csv.gz")
-DIAGNOSES_FILE = os.path.join(RAW_DATA_DIR, "DIAGNOSES_ICD.csv.gz")
-NOTES_FILE = os.path.join(RAW_DATA_DIR, "NOTEEVENTS.csv.gz")
+ADMISSIONS_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/admissions.csv.gz")
+PATIENTS_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/patients.csv.gz")
+DIAGNOSES_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/diagnoses_icd.csv.gz")
+NOTES_FILE = os.path.join(RAW_DATA_DIR, "mimic-iv-note/2.2/note/discharge.csv.gz")
 
 TARGET_READMISSION_DAYS = 30  
 TEST_SIZE = 0.2  
