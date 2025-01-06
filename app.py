@@ -1,13 +1,12 @@
-# app.py
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import streamlit as st
 import pandas as pd
 import xgboost as xgb
-import os
 from src.config.base_config import PROCESSED_DATA_DIR
 from src.rag.generate_summaries import generate_summary
+import streamlit as st
 
-# Define all feature names expected by the model
 FEATURE_NAMES = [
     'subject_id', 'hadm_id', 'hospital_expire_flag', 'num_diagnoses', 'age_at_admission',
     'gender_encoded', 'admission_type_DIRECT EMER.', 'admission_type_DIRECT OBSERVATION',
@@ -47,12 +46,10 @@ MEDICAL_CONDITIONS = [
     "depression", "anxiety", "asthma", "obesity", "cancer", "arthritis"
 ]
 
-# Initialize all features to 0
 def initialize_features():
     data = {feature: 0 for feature in FEATURE_NAMES}
     return pd.DataFrame([data])
 
-# Load model with caching
 @st.cache_resource
 def load_xgb_model(model_path):
     try:
@@ -64,25 +61,57 @@ def load_xgb_model(model_path):
         st.error(f"Error loading XGBoost model: {e}")
         return None
 
-# Load XGBoost model once
 model_path = os.path.join(PROCESSED_DATA_DIR, "baseline_xgb_model.json")
 model = load_xgb_model(model_path)
 
 st.title("MIMIC 30-Day Readmission Risk Predictor")
 
-# User inputs
+#################################################
+# Basic Inputs
+#################################################
 age = st.number_input("Age at Admission", min_value=0, max_value=100, value=65)
+
+if age < 12:
+    # Initialize or check session_state
+    if "parental_mode_accepted" not in st.session_state:
+        st.session_state["parental_mode_accepted"] = False
+    
+    if not st.session_state["parental_mode_accepted"]:
+        # Show short warning + accept button
+        st.warning("Parental Mode activated! This pipeline is primarily adult-focused. "
+                   "Pediatric predictions may be less reliable. Please accept to proceed.")
+        if st.button("Accept Parental Mode"):
+            st.session_state["parental_mode_accepted"] = True
+            st.rerun()
+        else:
+            st.stop()
+    else:
+        st.warning("Parental Mode activated! This pipeline is primarily adult-focused. "
+                   "Pediatric predictions may be less reliable. Please consult a pediatric "
+                   "specialist for accurate results.")
+
 num_diagnoses = st.number_input("Number of Diagnoses", min_value=0, max_value=50, value=5)
+if num_diagnoses > 20:
+    # Initialize or check session_state
+    if "more_diagnoses_accepted" not in st.session_state:
+        st.session_state["more_diagnoses_accepted"] = False
+    
+    if not st.session_state["more_diagnoses_accepted"]:
+        # Show short warning + accept button
+        st.warning("Are you sure about the number of diagnoses?")
+        if st.button("Yes"):
+            st.session_state["more_diagnoses_accepted"] = True
+            st.rerun()
+        else:
+            st.stop()
 gender = st.selectbox("Gender", ["M", "F"])
 
-# Admission Type (One-Hot Encoded)
 admission_types = [
     "DIRECT EMER.", "DIRECT OBSERVATION", "ELECTIVE", "EU OBSERVATION",
     "EW EMER.", "OBSERVATION ADMIT", "SURGICAL SAME DAY ADMISSION", "URGENT"
 ]
 selected_admission_type = st.selectbox("Admission Type", admission_types)
 
-# Admission Location (One-Hot Encoded)
 admission_locations = [
     "CLINIC REFERRAL", "EMERGENCY ROOM", "INFORMATION NOT AVAILABLE",
     "INTERNAL TRANSFER TO OR FROM PSYCH", "PACU", "PHYSICIAN REFERRAL",
@@ -91,11 +120,9 @@ admission_locations = [
 ]
 selected_admission_location = st.selectbox("Admission Location", admission_locations)
 
-# Insurance (One-Hot Encoded)
 insurances = ["Medicare", "No charge", "Other", "Private"]
 selected_insurance = st.selectbox("Insurance", insurances)
 
-# Language (One-Hot Encoded)
 languages = [
     "Amharic", "Arabic", "Armenian", "Bengali", "Chinese", "English",
     "French", "Haitian", "Hindi", "Italian", "Japanese", "Kabuverdianu",
@@ -105,11 +132,9 @@ languages = [
 ]
 selected_language = st.selectbox("Language", languages)
 
-# Marital Status (One-Hot Encoded)
 marital_statuses = ["MARRIED", "SINGLE", "WIDOWED"]
 selected_marital_status = st.selectbox("Marital Status", marital_statuses)
 
-# Race (One-Hot Encoded)
 races = [
     "ASIAN", "ASIAN - ASIAN INDIAN", "ASIAN - CHINESE", "ASIAN - KOREAN",
     "ASIAN - SOUTH EAST ASIAN", "BLACK/AFRICAN", "BLACK/AFRICAN AMERICAN",
@@ -127,93 +152,113 @@ races = [
 ]
 selected_race = st.selectbox("Race", races)
 
-# Medical Conditions (Dynamic Input)
 selected_conditions = st.multiselect(
     "Select Relevant Medical Conditions",
     options=MEDICAL_CONDITIONS,
     default=None
 )
 
-# Allow users to add additional conditions
 additional_conditions = st.text_input("Add Additional Medical Conditions (comma-separated)")
-if additional_conditions:
-    additional_conditions = [cond.strip() for cond in additional_conditions.split(",") if cond.strip()]
+if additional_conditions.strip():
+    extra_conds = [cond.strip() for cond in additional_conditions.split(",") if cond.strip()]
     if selected_conditions is None:
-        selected_conditions = additional_conditions
-    else:
-        selected_conditions = selected_conditions + additional_conditions
+        selected_conditions = []
+    selected_conditions += extra_conds
 
+if num_diagnoses > 25:
+    st.warning("Are you sure about so many diagnoses?")
+    if "diagnoses_confirmed" not in st.session_state:
+        st.session_state["diagnoses_confirmed"] = False
+
+    if not st.session_state["diagnoses_confirmed"]:
+        confirm_choice = st.radio(
+            "Confirm to proceed with this large number of diagnoses?",
+            ["No", "Yes"],
+            index=0
+        )
+        if st.button("Submit"):
+            if confirm_choice == "Yes":
+                st.session_state["diagnoses_confirmed"] = True
+                st.rerun()
+            else:
+                st.warning("Diagnosis entry not confirmed. Exiting.")
+                st.stop()
+    else:
+        st.warning("Large number of diagnoses confirmed. Proceed with caution.")
+
+############################################
+# PREDICT BUTTON
+############################################
 if st.button("Predict Readmission Risk"):
+    if not selected_conditions:
+        st.warning("Please select or add at least one medical condition to proceed.")
+        st.stop()
+        
     if model is None:
         st.error("Model is not loaded. Cannot make predictions.")
-    else:
-        try:
-            # Initialize all features to 0
-            X_input = initialize_features()
+        st.stop()
 
-            # Update user-provided features
-            X_input.at[0, 'age_at_admission'] = age
-            X_input.at[0, 'num_diagnoses'] = num_diagnoses
-            X_input.at[0, 'gender_encoded'] = 1 if gender == 'F' else 0
+    try:
+        X_input = initialize_features()
+        X_input.at[0, 'age_at_admission'] = age
+        X_input.at[0, 'num_diagnoses'] = num_diagnoses
+        X_input.at[0, 'gender_encoded'] = 1 if gender == 'F' else 0
 
-            # Update Admission Type
-            admission_type_column = f"admission_type_{selected_admission_type}"
-            if admission_type_column in FEATURE_NAMES:
-                X_input.at[0, admission_type_column] = 1
+        admission_type_column = f"admission_type_{selected_admission_type}"
+        if admission_type_column in FEATURE_NAMES:
+            X_input.at[0, admission_type_column] = 1
 
-            # Update Admission Location
-            admission_location_column = f"admission_location_{selected_admission_location}"
-            if admission_location_column in FEATURE_NAMES:
-                X_input.at[0, admission_location_column] = 1
+        admission_location_column = f"admission_location_{selected_admission_location}"
+        if admission_location_column in FEATURE_NAMES:
+            X_input.at[0, admission_location_column] = 1
 
-            # Update Insurance
-            insurance_column = f"insurance_{selected_insurance}"
-            if insurance_column in FEATURE_NAMES:
-                X_input.at[0, insurance_column] = 1
+        insurance_column = f"insurance_{selected_insurance}"
+        if insurance_column in FEATURE_NAMES:
+            X_input.at[0, insurance_column] = 1
 
-            # Update Language
-            language_column = f"language_{selected_language}"
-            if language_column in FEATURE_NAMES:
-                X_input.at[0, language_column] = 1
+        language_column = f"language_{selected_language}"
+        if language_column in FEATURE_NAMES:
+            X_input.at[0, language_column] = 1
 
-            # Update Marital Status
-            marital_status_column = f"marital_status_{selected_marital_status}"
-            if marital_status_column in FEATURE_NAMES:
-                X_input.at[0, marital_status_column] = 1
+        marital_status_column = f"marital_status_{selected_marital_status}"
+        if marital_status_column in FEATURE_NAMES:
+            X_input.at[0, marital_status_column] = 1
 
-            # Update Race
-            race_column = f"race_{selected_race}"
-            if race_column in FEATURE_NAMES:
-                X_input.at[0, race_column] = 1
+        race_column = f"race_{selected_race}"
+        if race_column in FEATURE_NAMES:
+            X_input.at[0, race_column] = 1
 
-            # Optional: Handle 'subject_id' and 'hadm_id' if necessary
-            # For prediction purposes, you might set them to a default value like 0
-            X_input.at[0, 'subject_id'] = 0
-            X_input.at[0, 'hadm_id'] = 0
-            X_input.at[0, 'hospital_expire_flag'] = 0  # Assuming this is a feature, not the target
+        X_input.at[0, 'subject_id'] = 0
+        X_input.at[0, 'hadm_id'] = 0
+        X_input.at[0, 'hospital_expire_flag'] = 0
 
-            # Convert to DMatrix
-            dmatrix = xgb.DMatrix(X_input)
+        dmatrix = xgb.DMatrix(X_input)
+        y_pred = model.predict(dmatrix)
+        readmission_prob = float(y_pred[0])
 
-            # Make prediction
-            y_pred = model.predict(dmatrix)
-            readmission_prob = float(y_pred[0])
+        st.write(f"**Predicted Probability of Readmission: {readmission_prob*100:.2f}%**")
+        
+        patient_context = f"A {age}-year-old patient with {num_diagnoses} diagnoses."
+        print(selected_conditions)
+        with st.spinner('Generating summary...'):
+            summary = generate_summary(patient_context, selected_conditions)
+        if summary:
+            st.write("### RAG-based Summary")
+            with st.expander("View Detailed Summary"):
+                st.markdown(summary)
+        else:
+            st.error("No summary could be generated.")
+        
+        st.write("---")
+        col1, col2 = st.columns([1,1])
+        with col1:
+            if st.button("Use Again"):
+                st.rerun()
 
-            st.write(f"Predicted Probability of Readmission: {readmission_prob*100:.2f}%")
+        with col2:
+            if st.button("Close Tool"):
+                st.write("Session will be closed. Goodbye!")
+                st.stop()
 
-            # Generate summary with RAG
-            patient_context = f"A {age}-year-old patient with {num_diagnoses} diagnoses."
-            conditions = selected_conditions if selected_conditions else []
-            
-            if not conditions:
-                st.warning("No medical conditions selected. Please select or add relevant medical conditions to generate a summary.")
-            else:
-                with st.spinner('Generating summary...'):
-                    summary = generate_summary(patient_context, conditions)
-                if summary:
-                    st.write("RAG-based Summary:")
-                    st.write(summary)
-                else:
-                    st.error("Failed to generate summary.")
-        except Exception as e:
-            st.error(f"An error occurred during prediction or summary generation: {e}")
+    except Exception as e:
+        st.error(f"An error occurred during prediction or summary generation: {e}")
