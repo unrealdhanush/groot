@@ -64,7 +64,7 @@ def load_xgb_model(model_path):
 model_path = os.path.join(PROCESSED_DATA_DIR, "baseline_xgb_model.json")
 model = load_xgb_model(model_path)
 
-st.title("MIMIC 30-Day Readmission Risk Predictor")
+st.title("G.R.O.O.T (Guided Readmission & Orchestrated Observation Text)")
 
 #################################################
 # Basic Inputs
