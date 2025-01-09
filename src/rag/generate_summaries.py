@@ -198,7 +198,7 @@ def generate_summary(patient_context, conditions):
             Knowledge base excerpts:
             {retrieved_texts}
 
-            Please provide a structured summary with:
+            Please provide a structured summary with the following from a clinician's perspective:
             1) Common complications.
             2) Recommended follow-up or interventions.
             3) Potential interactions between these conditions.
@@ -214,6 +214,6 @@ def generate_summary(patient_context, conditions):
 if __name__ == "__main__":
     # Simple test
     patient_context = "A 65-year-old patient with 2 diagnoses"
-    conditions = ['sepsis', 'asthma']
+    conditions = ['COPD', 'asthma']
     summary_result = generate_summary(patient_context, conditions)
     print("Generated Summary:\n", summary_result)

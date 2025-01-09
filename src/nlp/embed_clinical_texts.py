@@ -18,7 +18,7 @@ import os
 import pandas as pd
 import torch
 from transformers import AutoModel, AutoTokenizer
-from src.config.base_config import PROCESSED_DATA_DIR, NOTES_FILE
+from src.config.base_config import PROCESSED_DATA_DIR
 from src.data_processing.data_loader import load_notes
 
 def embed_texts(model_name="emilyalsentzer/Bio_ClinicalBERT", 
