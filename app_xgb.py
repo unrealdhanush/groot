@@ -3,7 +3,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import pandas as pd
 import xgboost as xgb
-from src.config.base_config import PROCESSED_DATA_DIR
+from src.config.base_config import MODELS_DIR
 from src.rag.generate_summaries import generate_summary
 import streamlit as st
 
@@ -61,7 +61,7 @@ def load_xgb_model(model_path):
         st.error(f"Error loading XGBoost model: {e}")
         return None
 
-model_path = os.path.join(PROCESSED_DATA_DIR, "baseline_xgb_model.json")
+model_path = os.path.join(MODELS_DIR, "baseline_xgb_model.json")
 model = load_xgb_model(model_path)
 
 st.title("G.R.O.O.T (Guided Readmission & Orchestrated Observation Text)")

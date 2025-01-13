@@ -86,8 +86,9 @@ def domain_adapt_model_mlm(
 
     # 8. Save Model
     trainer.save_model(output_dir)
+    tokenizer.save_pretrained(output_dir)
     print(f"Domain-adapted model (MLM) saved to {output_dir}")
-
+    
 
 if __name__ == "__main__":
     domain_adapt_model_mlm()

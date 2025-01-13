@@ -21,7 +21,7 @@ from transformers import AutoModel, AutoTokenizer
 from src.config.base_config import PROCESSED_DATA_DIR
 from src.data_processing.data_loader import load_notes
 
-def embed_texts(model_name="emilyalsentzer/Bio_ClinicalBERT", 
+def embed_texts(model_name="fine_tuned_clinicalbert_mlm", 
                 output_filename="discharge_embeddings.parquet",
                 max_length=512,
                 batch_size=16):
@@ -69,13 +69,14 @@ def embed_texts(model_name="emilyalsentzer/Bio_ClinicalBERT",
                                                return_tensors='pt')
         encoded = {k: v.to(device) for k,v in encoded.items()}
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = model(**encoded)
             # outputs.last_hidden_state: [batch_size, seq_len, hidden_size]
             # We can take the CLS token representation (index 0)
             cls_embeddings = outputs.last_hidden_state[:,0,:]  # shape: [batch_size, hidden_size]
+            cls_embeddings = cls_embeddings.to("mps")
 
-        cls_embeddings = cls_embeddings.cpu().numpy()
+        cls_embeddings = cls_embeddings.to("cpu").numpy()
         embeddings.append(cls_embeddings)
 
     # Concatenate all batches

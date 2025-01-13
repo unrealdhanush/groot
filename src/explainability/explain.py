@@ -54,7 +54,7 @@ def generate_shap_values(input_filename="features_with_embeddings.csv", model_fi
     # Save shap values if needed, or directly create a summary plot
     shap.summary_plot(shap_values, X_test, show=False)
     # To save the plot, you can do:
-    shap_plot_path = os.path.join(PROCESSED_DATA_DIR, "shap_summary.png")
+    shap_plot_path = os.path.join(PROCESSED_DATA_DIR, "shap_summary_post_da.png")
     plt.savefig(shap_plot_path)
     print(f"SHAP summary plot saved at {shap_plot_path}")
 

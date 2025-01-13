@@ -27,8 +27,6 @@ def load_admissions() -> pd.DataFrame:
     if not os.path.exists(ADMISSIONS_FILE):
         raise FileNotFoundError(f"Admissions file not found at {ADMISSIONS_FILE}")
     
-    # Load using pandas. The file may be gzipped (common for large MIMIC files).
-    # compression='gzip' will handle that automatically.
     df = pd.read_csv(ADMISSIONS_FILE, compression='gzip')
     return df
 

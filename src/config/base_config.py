@@ -10,9 +10,8 @@ import os
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 
 RAW_DATA_DIR = os.path.join(ROOT_DIR, "data", "raw")
-INTERIM_DATA_DIR = os.path.join(ROOT_DIR, "data", "interim")
 PROCESSED_DATA_DIR = os.path.join(ROOT_DIR, "data", "processed")
-
+MODELS_DIR = os.path.join(ROOT_DIR, "models")
 ADMISSIONS_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/admissions.csv.gz")
 PATIENTS_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/patients.csv.gz")
 DIAGNOSES_FILE = os.path.join(RAW_DATA_DIR, "mimiciv/3.1/hosp/diagnoses_icd.csv.gz")

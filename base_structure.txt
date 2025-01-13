@@ -1,0 +1,49 @@
+/Users/dhanush/code/unrealgit/groot
+├── data
+│   ├── folder_map.txt
+│   ├── interim
+│   ├── knowledge_base
+│   │   └── medical_knowledge.csv
+│   ├── processed
+│   └── raw
+├── models
+│   ├── baseline_xgb_model.json
+│   └── fusion_model.pt
+├── notebooks
+│   └── EDA.ipynb
+├── requirements.txt
+├── src
+│   ├── __init__.py
+│   ├── config
+│   │   ├── __init__.py
+│   │   └── base_config.py
+│   ├── data_processing
+│   │   ├── __init__.py
+│   │   ├── data_loader.py
+│   │   ├── feature_engineering.py
+│   │   ├── merge_embeddings.py
+│   │   └── preprocess.py
+│   ├── explainability
+│   │   ├── __init__.py
+│   │   └── explain.py
+│   ├── modeling
+│   │   ├── __init__.py
+│   │   ├── baseline_model.py
+│   │   ├── fusion_model.py
+│   │   └── trainer.py
+│   ├── nlp
+│   │   ├── __init__.py
+│   │   ├── domain_adaption.py
+│   │   └── embed_clinical_texts.py
+│   └── rag
+│       ├── __init__.py
+│       ├── build_index.py
+│       └── generate_summaries.py
+├── .gitignore
+├── README.md
+├── USER_MANUAL.md
+├── app_fm.py
+├── app_xgb.py
+├── requirements.txt
+├── base_structure.txt
+└── structure.txt

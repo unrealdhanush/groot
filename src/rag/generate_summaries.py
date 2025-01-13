@@ -1,3 +1,4 @@
+
 # src/rag/generate_summaries.py
 
 import os
@@ -9,7 +10,6 @@ from transformers import (
     AutoModel,
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
-    AutoModelForCausalLM,
 )
 from functools import lru_cache
 import logging
@@ -50,7 +50,6 @@ def run_model(prompt, max_length=1024, num_beams=5):
         # if tokenizer.eos_token is not None:
         #     tokenizer.pad_token = tokenizer.eos_token
         # else:
-        #     # 2) Otherwise, add a custom token
         #     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         #     model.resize_token_embeddings(len(tokenizer))
         device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
@@ -198,7 +197,7 @@ def generate_summary(patient_context, conditions):
             Knowledge base excerpts:
             {retrieved_texts}
 
-            Please provide a structured summary with the following from a clinician's perspective:
+            Please provide a structured summary with:
             1) Common complications.
             2) Recommended follow-up or interventions.
             3) Potential interactions between these conditions.
