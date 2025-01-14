@@ -74,7 +74,7 @@ We’ll keep the language straightforward and highlight motivations, folder stru
 
 Here is a typical layout:
 
-```bash
+```text
 groot
 ├── data
 │   ├── knowledge_base
@@ -126,7 +126,7 @@ groot
 
 After obtaining access and downloading the MIMIC-IV dataset, the typical dataset structure would look something like this:
 
-```bash
+```text
 data
 └── raw
 │       ├── mimic-iv-note
@@ -192,7 +192,7 @@ Now let's go through the codebase and how it was framed.
 
 ### **4.1 Environment and Configuration**
 
-We can start by creating and activating a virtual environment ```venv``` in Python. To do this you can execute the following bash script command in your terminal:
+We can start by creating and activating a virtual environment ```venv``` in Python. To do this you can execute the following python script command in your terminal:
 
 ```bash
 python3 -m venv .venv
@@ -211,7 +211,7 @@ File: ```src/config/base_config.py```
 
 Here is how the code looks:
 
-```bash
+```python
 # src/config/base_config.py
 
 """
@@ -236,7 +236,7 @@ TEST_SIZE = 0.2
 RANDOM_SEED = 42
 ```
 
-Explanation:
+**Explanation**:
 
 - ```ROOT_DIR``` is computed dynamically, ensuring we can run scripts from anywhere.
 
@@ -260,7 +260,7 @@ Here is the data loader script, this scripts basically:
 
 File: ```src/data_processing/data_loader.py```
 
-```bash
+```python
 # src/data_processing/data_loader.py
 
 """
@@ -333,7 +333,7 @@ def load_notes() -> pd.DataFrame:
     return df
 ```
 
-Explanation:
+**Explanation**:
 
 - Each loader function checks if the file exists. This is usually a good practice for error handling.
 
@@ -347,7 +347,7 @@ Here we define the logic to merge tables, create the outcome variable (30-day re
 
 File: ```src/data_processing/preprocess.py```
 
-```bash
+```python
 # src/data_processing/preprocess.py
 
 """
@@ -434,10 +434,738 @@ if __name__ == "__main__":
     save_processed_data(df)
 ```
 
-Explanation:
+**Explanation**:
 
 - ```def create_cohort()```: Main function to create the aalysis-ready data.
 
-- ```load_admissions()```, ```load_patients()```, ```load_diagnoses()``` are all caled to bring in raw data.
+- ```load_admissions()```, ```load_patients()```, ```load_diagnoses()``` are all called to bring in raw data.
 
-- 
+- ```pd.datetime(...)```: Converts the datetime data to a proper timestamp objects for better reperesentation and calculations.
+
+- ```merged = admissions.merge(patients['...'])```: Merging patient level demographics with admission-level records.
+
+- ```diag_counts = diagnoses.groupby('hadm_id')['icd_code'].count()```: Feature engineering - count the number of diagnosis codes per admission as simple complexity measure.
+
+- Sorting by ```admittime``` lets us identify subsequent admission records.
+
+- Comparing ```readmitted_with_30d``` with the difference of ```next_admittime``` and ```dischtime``` is the key step to defining our target variable.
+
+- ```save_processed_df()``` stores the dataframe onto the disk. It is usually best to keep I/O seperated from data processing logic.
+
+### **4.3 Exploratory Data Analysis (EDA)**
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from IPython.display import display
+import os
+
+DATA_PATH = os.path.abspath(os.path.join("..", "data", "processed", "processed_cohort.csv"))
+df = pd.read_csv(DATA_PATH)
+
+display(df.head())
+display(df.info())
+display(df.describe())
+```
+
+This would give a quick sneak peak of the dataset of interest(MIMIC-IV). Next, we take a look at the target distribution.
+
+```python
+target_counts = df['readmitted_within_30d'].value_counts()
+print("Target Distribution:")
+display(target_counts)
+```
+
+This would provide the number of entries of readmission and also number of entries of no-readmission. We can also visualize ths using a bar graph.
+
+```python
+sns.countplot(x='readmitted_within_30d', data=df)
+plt.title("Target Distribution (Readmission within 30 days)")
+plt.show()
+```
+
+We can also take a look at the percentages of missing values in the data by categories/columns.
+
+```python
+missing_perc = df.isna().mean().sort_values(ascending=False)
+print("Missing values percentage:")
+display(missing_perc)
+```
+
+We can also visualize the distribution of readmission status across different age groups.
+
+```python
+df['age_at_admission'] = df['anchor_age']
+sns.histplot(data=df, x='age_at_admission', hue='readmitted_within_30d', element='step', kde=True)
+plt.title("Age Distribution by Readmission Status")
+plt.show()
+```
+
+We could also visualize distribution of readmission across genders(we only considered two genders as that was what was available in MIMIC-IV).
+
+```python
+sns.countplot(x='gender', hue='readmitted_within_30d', data=df)
+plt.title("Gender vs Readmission")
+plt.show()
+```
+
+Finally, we could visualize the distribution of readmissions across the number of diagnoses.
+
+```python
+sns.histplot(data=df, x='num_diagnoses', hue='readmitted_within_30d', kde=True, element='step')
+plt.title("Number of Diagnoses vs Readmission")
+plt.show()
+```
+
+**Explanation**:
+
+- We load the processes dataset and perform standard EDA tasks.
+
+- We look at the distributions, missing values, and simple relationships with the target.
+
+- Insights here did guide what features to create and ways to handle missing data.
+
+### **4.4 Feature Engineering**
+
+Here we have created a reproducible script to handle feature transformation. After EDA, we apply those feature transformations that were determined fom it.
+
+File: ```src/data_processing/feature_engineering.py```
+
+```python
+# src/data_processing/feature_engineering.py
+
+"""
+This script applies feature transformations for MIMIC-IV data.
+We assume we have a processed_cohort.csv with columns like:
+  [
+    'subject_id', 'hadm_id', 'admittime', 'dischtime', 'anchor_age',
+    'gender', 'num_diagnoses', 'readmitted_within_30d', 'next_admittime'
+  ]
+
+Steps:
+1. Create an AGE_AT_ADMISSION feature (simplified to anchor_age).
+2. Handle missing values in NUM_DIAGNOSES by filling with 0.
+3. Encode gender as binary (0/1).
+4. Save a final feature set ready for modeling.
+"""
+
+import os
+import pandas as pd
+import numpy as np
+from src.config.base_config import PROCESSED_DATA_DIR
+
+def engineer_features(input_filename="processed_cohort.csv", output_filename="final_features.csv"):
+    input_path = os.path.join(PROCESSED_DATA_DIR, input_filename)
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"{input_filename} not found in {PROCESSED_DATA_DIR}")
+
+    # For MIMIC-IV, 'admittime' and 'dischtime' are typically already in datetime if you created them in preprocess.py
+    # We'll parse them again just in case, ignoring errors if they're already datetimes.
+    df = pd.read_csv(input_path, parse_dates=['admittime', 'dischtime', 'next_admittime'], keep_default_na=True)
+
+    # --- 1. AGE_AT_ADMISSION Feature ---
+    # MIMIC-IV does not have a direct DOB. Instead, we have anchor_age (approximate age at first admission).
+    # For a simple approach, just use anchor_age as the age feature.
+    # If you need a more precise age per admission, you could approximate by anchor_year vs admittime year, etc.
+    df['age_at_admission'] = df['anchor_age']
+
+    # Handle unrealistic ages (some might be > 90 due to deidentification policy).
+    # This step is optional. You might choose to leave them as-is or clamp them.
+    df.loc[df['age_at_admission'] > 90, 'age_at_admission'] = 90
+
+    # --- 2. Missing Values for num_diagnoses ---
+    # In MIMIC-IV, the script may have named it 'num_diagnoses' already.
+    # If your code uses a different name, adjust accordingly.
+    if 'num_diagnoses' in df.columns:
+        df['num_diagnoses'] = df['num_diagnoses'].fillna(0)
+    else:
+        df['num_diagnoses'] = 0  # fallback if not present
+
+    # --- 3. Encode Gender (M/F -> 0/1) ---
+    # MIMIC-IV typically uses 'gender' with values "M" or "F".
+    if 'gender' in df.columns:
+        df['gender_encoded'] = df['gender'].map({'M': 0, 'F': 1})
+        df.drop(columns=['gender'], inplace=True)
+    else:
+        df['gender_encoded'] = 0
+
+    # --- 4. Remove Unneeded Columns ---
+    # We remove columns we won't use in modeling, like raw times or anchor_age itself
+    # (you can keep them if you want to do time-based features).
+    # We'll keep 'hadm_id', 'subject_id', and 'readmitted_within_30d' for reference.
+    drop_cols = [
+        'admittime', 
+        'dischtime', 
+        'next_admittime', 
+        'anchor_age'
+    ]
+    for col in drop_cols:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+
+    # Save the engineered features
+    output_path = os.path.join(PROCESSED_DATA_DIR, output_filename)
+    df.to_csv(output_path, index=False)
+    print(f"Feature-engineered dataset saved to {output_path}")
+
+if __name__ == "__main__":
+    engineer_features()
+```
+
+**Explanation**:
+
+- ```engineer_features()``` function reads the procesed data and applies transformations consistently.
+
+- we add ```age_at_admission```, we handle missing values in ```num_diagnoses```, we encode gender as a numeric column and also drop columns not needed for baseline modeling.
+
+- we save the finalized feature dataset (```final_features.csv```) ready for model training.
+
+This script can be run to ensure reproducible feature engineering. If you'd like to find more complex features through EDA (like trend features from labs and vitals), you'd implement them here.
+
+### **4.5 Baseline Modeling(Structure Data Only)**
+
+We have set up a baseline model using XGBoost just to have a quick benchmark. It's pretty simple: trained on engineered features just to gauge how well we can predict readmission.
+
+File: ```src/modeling/baseline_model.py```
+
+```python
+# src/modeling/baseline_model.py
+
+"""
+This script trains a baseline model (e.g., XGBoost) on the structured features.
+Steps:
+1. Load final_features.csv
+2. Split into train/test.
+3. Train an XGBoost model on these features.
+4. Evaluate and print performance metrics.
+"""
+
+import os
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
+import xgboost as xgb
+
+from src.config.base_config import PROCESSED_DATA_DIR, RANDOM_SEED, TEST_SIZE
+
+def train_baseline_model(input_filename="final_features.csv"):
+    input_path = os.path.join(PROCESSED_DATA_DIR, input_filename)
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"{input_filename} not found in {PROCESSED_DATA_DIR}")
+
+    df = pd.read_csv(input_path)
+    
+    # Separate features and target
+    X = df.drop(columns=['readmitted_within_30d'])
+    cols_to_drop = ["deathtime", "admit_provider_id", "discharge_location", "edregtime", "edouttime"]
+    X = X.drop(columns=cols_to_drop, errors='ignore')
+    X = pd.get_dummies(X, columns=["admission_type", "admission_location", "insurance", "language", "marital_status", "race"],drop_first=True)
+    y = df['readmitted_within_30d']
+
+    # Train/test split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED, stratify=y)
+
+    # Convert to DMatrix for XGBoost
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dtest = xgb.DMatrix(X_test, label=y_test)
+
+    # Basic hyperparameters for a quick baseline
+    params = {
+        'objective': 'binary:logistic',
+        'eval_metric': 'auc',
+        'seed': RANDOM_SEED
+    }
+
+    # Train model
+    evals = [(dtrain, 'train'), (dtest, 'eval')]
+    model = xgb.train(params, dtrain, num_boost_round=100, early_stopping_rounds=10, evals=evals)
+
+    # Predictions
+    y_pred_prob = model.predict(dtest)
+    y_pred = (y_pred_prob > 0.5).astype(int)
+
+    # Evaluate
+    auc = roc_auc_score(y_test, y_pred_prob)
+    acc = accuracy_score(y_test, y_pred)
+    report = classification_report(y_test, y_pred)
+
+    print(f"Baseline Model AUC: {auc:.4f}")
+    print(f"Baseline Model Accuracy: {acc:.4f}")
+    print("Classification Report:")
+    print(report)
+
+    # Save the model
+    model.save_model(os.path.join(PROCESSED_DATA_DIR, "baseline_xgb_model.json"))
+    print("Model saved.")
+
+if __name__ == "__main__":
+    train_baseline_model()
+```
+
+**Explanation**:
+
+- We loaded the engineered feature set, split the data into train/test.
+
+- We then trained a simple XGBoost model (other models like LightGBM or Logistic Regression can be used similarly).
+
+- We print AUC, accuracy and a classification report to gauge performance and then save the trained model for comparison.
+
+This baseline will help us understand if adding text embeddings or further domain adaptation steps that'd potentially improve performance.
+
+### **4.6 NLP Integration: Embedding Discharge Summaries**
+
+File: ```src/nlp/embed_clinical_texts.py```
+
+```python
+# src/nlp/embed_clinical_texts.py
+
+"""
+This script:
+1. Loads the MIMIC NOTEEVENTS data.
+2. Filters for discharge summaries linked to the admissions in our cohort.
+3. Uses ClinicalBERT to embed these discharge summaries.
+4. Produces a CSV (or parquet) file mapping hadm_id to embedding vectors.
+
+We will:
+- Load a pre-trained ClinicalBERT model from Hugging Face (e.g., "emilyalsentzer/Bio_ClinicalBERT").
+- Tokenize each discharge summary.
+- Obtain embeddings (CLS token or average pooling of token embeddings).
+- Save a DataFrame with hadm_id and the embedding vector.
+"""
+
+import os
+import pandas as pd
+import torch
+from transformers import AutoModel, AutoTokenizer
+from src.config.base_config import PROCESSED_DATA_DIR
+from src.data_processing.data_loader import load_notes
+
+def embed_texts(model_name="fine_tuned_clinicalbert_mlm", 
+                output_filename="discharge_embeddings.parquet",
+                max_length=512,
+                batch_size=16):
+    """
+    Embed discharge summaries using ClinicalBERT.
+    
+    Steps:
+    - Load NOTEEVENTS and filter to discharge summaries.
+    - For each hadm_id, possibly combine multiple discharge summaries if they exist (usually one per admission).
+    - Tokenize and run through model in batches.
+    - Extract embeddings (use CLS token representation or average of last hidden state).
+    - Save results.
+    """
+    # Load notes
+    discharge_summaries = load_notes()
+    
+    # Filter to discharge summaries (only in MIMIC-III)
+    # discharge_summaries = notes_df[notes_df['CATEGORY'] == 'Discharge summary'].copy()
+    
+    # We assume each hadm_id has one main discharge summary. If multiple rows exist, concatenate text.
+    discharge_summaries = discharge_summaries.groupby('hadm_id')['text'].apply(lambda x: " ".join(x)).reset_index()
+
+    # Load the ClinicalBERT model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    
+    # Decide on device (CPU or GPU)
+    device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+    model.to(device)
+    model.eval()
+
+    hadm_ids = discharge_summaries['hadm_id'].values
+    texts = discharge_summaries['text'].values
+
+    # Tokenize in batches
+    # Note: If texts are very long, consider truncation or summarization.
+    embeddings = []
+    for start_idx in range(0, len(texts), batch_size):
+        batch_texts = texts[start_idx:start_idx+batch_size]
+        batch_texts = batch_texts.tolist()
+        encoded = tokenizer.batch_encode_plus(batch_texts, padding=True, truncation=True, max_length=max_length,return_tensors='pt')
+        encoded = {k: v.to(device) for k,v in encoded.items()}
+
+        with torch.inference_mode():
+            outputs = model(**encoded)
+            # outputs.last_hidden_state: [batch_size, seq_len, hidden_size]
+            # We can take the CLS token representation (index 0)
+            cls_embeddings = outputs.last_hidden_state[:,0,:]  # shape: [batch_size, hidden_size]
+            cls_embeddings = cls_embeddings.to("mps")
+
+        cls_embeddings = cls_embeddings.to("cpu").numpy()
+        embeddings.append(cls_embeddings)
+
+    # Concatenate all batches
+    embeddings = pd.DataFrame(
+        data = torch.tensor([item for batch in embeddings for item in batch]).numpy(),
+        index = hadm_ids
+    )
+    embeddings.reset_index(inplace=True)
+    embeddings.rename(columns={'index': 'hadm_id'}, inplace=True)
+
+    # Save embeddings
+    output_path = os.path.join(PROCESSED_DATA_DIR, output_filename)
+    embeddings.to_parquet(output_path, index=False)
+    print(f"Discharge embeddings saved to {output_path}")
+
+if __name__ == "__main__":
+    embed_texts()
+```
+
+**Explanation**:
+
+- We loaded discharge summaries, gruped by ```hadm_id```.
+
+- We used ```AutoTokenizer``` and ```AutoModel``` from ```transformers``` to load ```Bio_ClinicalBERT```.
+
+- We batch processed texts to avoid memory issues, we also selected CLS token embedding as ou document-level embedding. Other proposed strategies: averaging all tokens or using pooling.
+
+- We saved the final embeddings as a parquet file for efficiency.
+
+**Performance Considerations**:
+
+- ```max_length=512``` might truncate some long summaries, but ClinicalBERT models typically handle up to 512 tokens. 
+
+- We used ```mps``` acceleration in order to make up for the speed of a GPU level environment. In case you need to run it on a CPU, you can reduce the ```batch_size```, and try running it again.
+
+### **4.7 Merging Embeddings with Structured Features**
+
+After generating embeddings, we must merge them with our ```final_features.csv```. This gave us a single dataset with structured features plus text embeddings.
+
+File: ```src/data_processing/merge_embeddings.py```
+
+```python
+# src/data_processing/merge_embeddings.py
+
+"""
+Merge the previously engineered structured features with the discharge summary embeddings.
+
+We assume:
+- final_features.csv has hadm_id column.
+- discharge_embeddings.parquet has columns [hadm_id, embedding_dim_1, ... embedding_dim_n].
+
+We will:
+- Load both files,
+- Merge on hadm_id,
+- Save a combined dataset for modeling.
+"""
+
+import os
+import pandas as pd
+from src.config.base_config import PROCESSED_DATA_DIR
+
+def merge_embeddings(structured_file="final_features.csv", embeddings_file="discharge_embeddings.parquet", output_file="features_with_embeddings.csv"):
+    structured_path = os.path.join(PROCESSED_DATA_DIR, structured_file)
+    embeddings_path = os.path.join(PROCESSED_DATA_DIR, embeddings_file)
+    
+    if not os.path.exists(structured_path):
+        raise FileNotFoundError(f"{structured_file} not found.")
+    if not os.path.exists(embeddings_path):
+        raise FileNotFoundError(f"{embeddings_file} not found.")
+
+    df_struct = pd.read_csv(structured_path)
+    df_embed = pd.read_parquet(embeddings_path)
+
+    # Merge on hadm_id
+    df_merged = df_struct.merge(df_embed, on='hadm_id', how='left')
+    
+    # Some admissions might not have a discharge summary (or embedding)
+    # We can either drop them or impute embeddings as zeros.
+    # For simplicity, fill missing embeddings with 0:
+    embedding_cols = [c for c in df_merged.columns if c not in df_struct.columns and c != 'hadm_id']
+    for col in embedding_cols:
+        df_merged[col].fillna(0, inplace=True)
+
+    # Save merged dataset
+    output_path = os.path.join(PROCESSED_DATA_DIR, output_file)
+    df_merged.to_csv(output_path, index=False)
+    print(f"Features with embeddings saved to {output_path}")
+
+if __name__ == "__main__":
+    merge_embeddings()
+```
+
+**Explanation**:
+
+- We merged on ```hadm_id``` to align each admission's structured features with its text embedding.
+
+- We also handled missing embeddings by filling with zeros (a simple approach).
+
+- The resulting file includes both structured features and text embeddings, ready for modeling.
+
+### **4.8 Domain Adaptation (PEFT)**
+
+We outlined a sceipt to perform parameter-efficient fine-tuning on a subset of notes. This allowed us to adapt the ClinicalBERT modl to the readmission prediction domain. the idea is to take some of the discharge summaries (and possibly labels or related tasks) and apply LoRA or other PEFT methods to refine embeddings.
+
+**Note**: Running domain adaptation requires intricate steps: a small training loop, a labeled objective, or at least a domain adaptation objective (like masked language modeling on domain data).
+
+File: ```src/nlp/domain_adaption.py```
+
+```python
+# src/nlp/domain_adaptation_mlm.py (Option 2)
+
+"""
+Option 2: Standard MLM fine-tuning for domain adaptation with BertForMaskedLM,
+without using PEFT. 
+You can optionally freeze certain layers to reduce compute.
+"""
+
+import os
+import torch
+from transformers import (
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    Trainer,
+    TrainingArguments
+)
+from datasets import Dataset
+
+
+def domain_adapt_model_mlm(
+    model_name="emilyalsentzer/Bio_ClinicalBERT",
+    output_dir="fine_tuned_clinicalbert_mlm",
+    max_length=512,
+    num_train_epochs=1,
+    batch_size=8
+):
+    # 1. Load tokenizer and model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForMaskedLM.from_pretrained(model_name)
+
+    # (Optional) Partial Freeze Example:
+    for name, param in model.named_parameters():
+        if "bert.encoder.layer.0" in name or "bert.encoder.layer.1" in name:
+            param.requires_grad = False
+
+    # 2. Load domain texts (e.g., discharge notes). Customize as needed: e.g. from MIMIC, let's just say we have a function load_notes() that returns a list of text. Below is a placeholder.
+    from src.data_processing.data_loader import load_notes
+    domain_texts = load_notes()  # list of strings or a DataFrame with a 'text' column
+
+    domain_texts = domain_texts['text'].tolist()
+
+    domain_dataset = Dataset.from_dict({'text': domain_texts})
+
+    # 3. Tokenize
+    def tokenize_function(examples):
+        return tokenizer(
+            examples['text'], 
+            truncation=True, 
+            max_length=max_length, 
+            return_special_tokens_mask=True
+        )
+
+    tokenized_dataset = domain_dataset.map(tokenize_function, batched=True, num_proc=1)
+
+    # 4. Data Collator for MLM
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, 
+        mlm=True,
+        mlm_probability=0.15
+    )
+
+    # 5. Training Arguments
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        overwrite_output_dir=True,
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=batch_size,
+        save_steps=10_000,
+        save_total_limit=2,
+        logging_steps=100,
+        logging_dir=f"{output_dir}/logs",
+        do_train=True
+    )
+
+    # 6. Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+        data_collator=data_collator
+    )
+
+    # 7. Train
+    trainer.train()
+
+    # 8. Save Model
+    trainer.save_model(output_dir)
+    tokenizer.save_pretrained(output_dir)
+    print(f"Domain-adapted model (MLM) saved to {output_dir}")
+    
+
+if __name__ == "__main__":
+    domain_adapt_model_mlm()
+```
+
+**Explanation**:
+
+- We apply LoRA-based fine-tuning via ```peft```. This code uses a masked language modeling objective to adapt the model to the domain.
+
+- After training, we got a model that's more aligned with MIMIC data, potentially producing better embeddings.
+
+- We then re-run ```embed_clinical_texts.py``` with the fine-tuned model to get domain-daptation embeddings.
+
+### **4.9 Fusion Model**
+
+File: ```src/modeling/fusion_model.py```
+
+```python
+# src/modeling/fusion_model.py
+
+"""
+Defines the Fusion Model:
+1. Combines structured features and text embeddings.
+2. Uses fully connected layers for prediction.
+"""
+
+import torch
+import torch.nn as nn
+
+class FusionModel(nn.Module):
+    """
+    Fusion model combining structured features and text embeddings for classification.
+    """
+    def __init__(self, structured_input_dim, embedding_dim, hidden_dims, dropout_rate=0.2):
+        """
+        Args:
+            structured_input_dim (int): Number of structured input features.
+            embedding_dim (int): Size of text embedding vectors.
+            hidden_dims (list): List of hidden layer sizes for the feed-forward network.
+            dropout_rate (float): Dropout rate for regularization.
+        """
+        super(FusionModel, self).__init__()
+        
+        # Separate branches for structured and text embeddings
+        self.structured_branch = nn.Sequential(
+            nn.Linear(structured_input_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        self.text_branch = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Combined branch
+        self.combined_branch = nn.Sequential(
+            nn.Linear(2 * hidden_dims[0], hidden_dims[1]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dims[1], 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, structured_inputs, text_embeddings):
+        """
+        Forward pass for the model.
+        
+        Args:
+            structured_inputs (torch.Tensor): Structured input features [batch_size, structured_input_dim].
+            text_embeddings (torch.Tensor): Text embeddings [batch_size, embedding_dim].
+        
+        Returns:
+            torch.Tensor: Predicted probabilities for binary classification.
+        """
+        structured_out = self.structured_branch(structured_inputs)
+        text_out = self.text_branch(text_embeddings)
+        
+        combined = torch.cat((structured_out, text_out), dim=1)
+        output = self.combined_branch(combined)
+        
+        return output
+```
+
+### **4.10 Explainability with SHAP**
+
+File: ```src/explainability/explain.py```
+
+```python
+# src/explainability/explain.py
+
+"""
+Use SHAP to explain model predictions.
+We will:
+1. Load the trained model and the final dataset with embeddings.
+2. Split into test data as previously done.
+3. Compute SHAP values.
+4. Save a summary plot or a few example explanations.
+
+Note: SHAP can be computationally expensive, so consider using a sample of test data.
+"""
+
+import os
+import pandas as pd
+import shap
+import matplotlib.pyplot as plt
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from src.config.base_config import PROCESSED_DATA_DIR, TEST_SIZE, RANDOM_SEED
+
+def generate_shap_values(input_filename="features_with_embeddings.csv", model_filename="baseline_xgb_model.json"):
+    # Load data
+    input_path = os.path.join(PROCESSED_DATA_DIR, input_filename)
+    model_path = os.path.join(PROCESSED_DATA_DIR, model_filename)
+
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"{input_filename} not found in {PROCESSED_DATA_DIR}")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"{model_filename} not found in {PROCESSED_DATA_DIR}")
+
+    df = pd.read_csv(input_path)
+    X = df.drop(columns=['readmitted_within_30d'])
+    cols_to_drop = ["deathtime", "admit_provider_id", "discharge_location", "edregtime", "edouttime"]
+    X = X.drop(columns=cols_to_drop, errors='ignore')
+    X = pd.get_dummies(X, columns=["admission_type", "admission_location", "insurance", "language", "marital_status", "race"],drop_first=True)
+    y = df['readmitted_within_30d']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED, stratify=y)
+    
+    # Load model
+    model = xgb.Booster()
+    model.load_model(model_path)
+    feature_names = model.feature_names
+    X_test = X_test.reindex(columns=feature_names)
+    # SHAP values for XGBoost
+    # Convert data to DMatrix
+    dtest = xgb.DMatrix(X_test)
+
+    # Create a SHAP explainer
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_test)
+
+    # Save shap values if needed, or directly create a summary plot
+    shap.summary_plot(shap_values, X_test, show=False)
+    # To save the plot, you can do:
+    shap_plot_path = os.path.join(PROCESSED_DATA_DIR, "shap_summary_post_da.png")
+    plt.savefig(shap_plot_path)
+    print(f"SHAP summary plot saved at {shap_plot_path}")
+
+if __name__ == "__main__":
+    generate_shap_values()
+```
+
+**Explanation**:
+
+- We load the trained model and test data.
+
+- We used ```shap.TreeExplainer``` for XGBoost models. This computes the SHAP values and creates a summary plot. 
+
+- Individua explanations can be investigated or top features that contributes to predictions can be found.
+
+### **4.11 Retrieval-Augmented Generation (RAG)**
+
+#### **Outline**
+
+- We created a small Knowledge Base (KB) of medical facts. It's all encapsulated in a ```csv``` file with short medical condition summaries or guidelines.
+
+- We also embedded the KB using a specialized embedding model (e.g., a sentence transformer). We also used FAISS to index these embeddings.
+
+  - Identified key conditions from their diagnoses or risk factors.
+
+  - Queried FAISS to retrieve the most relevant snippets.
+
+  - Generated a summary using a small LLM (using a local model here) that incorporates retrieval knowledge.
+
