@@ -55,8 +55,6 @@ groot/
 │  ├─ processed/
 │  └─ knowledge_base/
 ├─ models/
-│  ├─ baseline_xgb_model.json
-│  └─ fusion_model.pt
 ├─ notebooks/
 │  └─ EDA.ipynb
 ├─ src/
