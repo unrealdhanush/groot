@@ -1,4 +1,8 @@
 /.venv
-/data
+/data/knowledge_base/faiss_index.bin
+/data/knowledge_base/kb_mapping.csv
+/data/processed/*
+/data/raw/*
 /fine_tuned_clinicalbert_mlm
+/models/*
 **/__pycache__
