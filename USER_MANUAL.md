@@ -824,7 +824,7 @@ if __name__ == "__main__":
 
 **Performance Considerations**:
 
-- ```max_length=512``` might truncate some long summaries, but ClinicalBERT models typically handle up to 512 tokens. 
+- ```max_length=512``` might truncate some long summaries, but ClinicalBERT models typically handle up to 512 tokens.
 
 - We used ```mps``` acceleration in order to make up for the speed of a GPU level environment. In case you need to run it on a CPU, you can reduce the ```batch_size```, and try running it again.
 
@@ -1151,7 +1151,7 @@ if __name__ == "__main__":
 
 - We load the trained model and test data.
 
-- We used ```shap.TreeExplainer``` for XGBoost models. This computes the SHAP values and creates a summary plot. 
+- We used ```shap.TreeExplainer``` for XGBoost models. This computes the SHAP values and creates a summary plot.
 
 - Individua explanations can be investigated or top features that contributes to predictions can be found.
 
@@ -1163,9 +1163,468 @@ if __name__ == "__main__":
 
 - We also embedded the KB using a specialized embedding model (e.g., a sentence transformer). We also used FAISS to index these embeddings.
 
+- At inference time, given a patient's structured and textual data, we:
+
   - Identified key conditions from their diagnoses or risk factors.
 
   - Queried FAISS to retrieve the most relevant snippets.
 
   - Generated a summary using a small LLM (using a local model here) that incorporates retrieval knowledge.
+
+#### **Creating a Knowledge Base (KB)**
+
+File: ```data/knowledge_base/medical_knowledge.csv``` (exampl excerpt)
+
+```csv
+id,text
+1,"Heart Failure: A chronic condition where the heart doesn't pump blood as well as it should."
+2,"Chronic Kidney Disease: A long-term condition where the kidneys do not work effectively."
+3,"Diabetes Mellitus: A group of diseases that result in too much sugar in the blood."
+4,"COPD: A chronic inflammatory lung disease that causes obstructed airflow from the lungs."
+
+```
+
+#### **Embedding and Indexing the KB**
+
+File: ```src/rag/build_index.py```
+
+```python
+# src/rag/build_index.py
+
+"""
+1. Load the medical_knowledge.csv (KB).
+2. Embed each row using a sentence transformer or ClinicalBERT.
+3. Build a FAISS index for similarity search.
+4. Save the index and the mapping (id -> text).
+"""
+
+import os
+import pandas as pd
+import torch
+import faiss
+from transformers import AutoTokenizer, AutoModel
+from src.config.base_config import ROOT_DIR
+
+def build_faiss_index(kb_file="data/knowledge_base/medical_knowledge.csv", model_name="sentence-transformers/all-MiniLM-L6-v2", index_file="faiss_index.bin", mapping_file="kb_mapping.csv"):
+    # Load KB
+    kb_path = os.path.join(ROOT_DIR, kb_file)
+    df = pd.read_csv(kb_path)
+
+    # Load embedding model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+    model.to(device)
+    model.eval()
+
+    def embed_texts(texts):
+        encoded = tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors='pt')
+        encoded = {k: v.to(device) for k,v in encoded.items()}
+        with torch.no_grad():
+            outputs = model(**encoded)
+        # Use mean pooling
+        embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        return embeddings
+
+    embeddings = embed_texts(df['text'].tolist())
+
+    # Build FAISS index
+    d = embeddings.shape[1]  # dimension
+    index = faiss.IndexFlatL2(d)
+    index.add(embeddings)
+
+    # Save index
+    index_path = os.path.join(ROOT_DIR, "data", "knowledge_base", index_file)
+    faiss.write_index(index, index_path)
+
+    # Save mapping (id->text)
+    mapping_path = os.path.join(ROOT_DIR, "data", "knowledge_base", mapping_file)
+    df.to_csv(mapping_path, index=False)
+    print(f"FAISS index and mapping saved to {index_path} and {mapping_path}.")
+
+if __name__ == "__main__":
+    build_faiss_index()
+```
+
+**Explanation**:
+
+- We embedded the KB entries using a sentence transformer model (lightweight and good for similarity).
+
+- We created a FAISS index and save it for later retrieval.
+
+- The ```kb_mapping.csv``` file stores the text associated with each embedded entry.
+
+#### **Retrieving and Generating Summaries**
+
+File: ```src/rag/generate_summaries.py```
+
+```python
+
+# src/rag/generate_summaries.py
+
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import pandas as pd
+import torch
+import faiss
+from transformers import (
+    AutoModel,
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+)
+from functools import lru_cache
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+############################################################
+# 1. Cache Model Loading
+############################################################
+lru_cache(1)
+def load_model(model_name="google/flan-t5-large"):
+    """
+    Load LLM model and tokenizer, placing them on CPU for consistent usage.
+    Using Streamlit's cache_resource to avoid reloading each time.
+    """
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+        model.to(device)
+        model.eval()
+        logger.info(f"Loaded {model_name} on {device} with eval mode.")
+        return tokenizer, model
+    except Exception as e:
+        logger.error(f"Error loading LLM model: {e}")
+        return None, None
+
+def run_model(prompt, max_length=1024, num_beams=5):
+    """
+    Use the cached LLM model to generate text from the prompt.
+    """
+    try:
+        tokenizer, model = load_model()
+        if tokenizer is None or model is None:
+            logger.error("LLM model or tokenizer was not loaded correctly.")
+            return "Could not load LLM model."
+        # if tokenizer.eos_token is not None:
+        #     tokenizer.pad_token = tokenizer.eos_token
+        # else:
+        #     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+        #     model.resize_token_embeddings(len(tokenizer))
+        device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+        model = model.to(device)
+        model.eval()
+        inputs = tokenizer(
+            prompt,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+            max_length=512
+        ).to(device)
+            # Generation
+        try:
+            with torch.inference_mode():
+                outputs = model.generate(
+                    inputs["input_ids"],
+                    max_length=max_length,
+                    num_beams=num_beams,
+                    early_stopping=False
+                )
+            summary = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            logger.info("Successfully generated summary via run_model.")
+            return summary
+        except Exception as e:
+            logger.error(f"Runtime error generated during text generation: {e}")
+            raise
+    except Exception as e:
+        logger.error(f"Error in run_model: {e}")
+        return "An error occured while generating the summary"
+
+############################################################
+# 2. FAISS Index and Embedding
+############################################################
+
+def load_faiss_index(index_file="faiss_index.bin", mapping_file="kb_mapping.csv"):
+    """
+    Load the FAISS index and the corresponding mapping CSV.
+    """
+    try:
+        from src.config.base_config import ROOT_DIR  
+        index_path = os.path.join(ROOT_DIR, "data", "knowledge_base", index_file)
+        mapping_path = os.path.join(ROOT_DIR, "data", "knowledge_base", mapping_file)
+        index = faiss.read_index(index_path)
+        df_map = pd.read_csv(mapping_path)
+        logger.info(f"Loaded FAISS index from {index_path} and mapping from {mapping_path}.")
+        return index, df_map
+    except Exception as e:
+        logger.error(f"Error loading FAISS index or mapping: {e}")
+        raise
+
+def embed_query(query, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    """
+    Embed the query text using a sentence transformer model on CPU.
+    """
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+        device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+        model.to(device)
+        model.eval()
+        logger.info(f"Using device: {device} for embedding '{model_name}'.")
+
+        model.eval()
+        
+        encoded = tokenizer(
+            [query],
+            padding=True,
+            truncation=True,
+            return_tensors='pt'
+        )
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+        logger.info("encodings prepared")
+
+        # Forward Pass
+        with torch.inference_mode(): 
+            outputs = model(**encoded)
+        # Mean pooling over the last hidden state
+        embedding = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        logger.info("Generated query embedding for retrieval.")
+        return embedding
+    except Exception as e:
+        logger.error(f"Error during embedding generation: {e}")
+        raise
+
+def retrieve_knowledge(query, top_k=3):
+    """
+    Retrieve the top_k relevant knowledge base entries. If none found, returns an empty DataFrame.
+    """
+    try:
+        index, df_map = load_faiss_index()
+        embedding = embed_query(query)
+        D, I = index.search(embedding, top_k)
+        if len(I[0]) == 0:
+            logger.warning("FAISS search returned no indices.")
+            return pd.DataFrame()
+        retrieved_docs = df_map.iloc[I[0]]
+        logger.info(f"Retrieved top {top_k} documents for query '{query}'.")
+        return retrieved_docs
+    except Exception as e:
+        logger.error(f"Error during knowledge retrieval: {e}")
+        return pd.DataFrame()
+
+############################################################
+# 3. Summarization Orchestrator
+############################################################
+
+def fallback_no_retrieval_summary(patient_context, conditions):
+    """
+    Fallback summary if no relevant knowledge base text was found.
+    """
+    cond_str = ", ".join(conditions)
+    fallback_text = (
+        f"No relevant knowledge base entries found for the conditions: {cond_str}. "
+        f"Based on {patient_context}, clinicians should consider close monitoring for potential readmission."
+    )
+    return fallback_text
+
+def generate_summary(patient_context, conditions):
+    """
+    Generate a summary from the retrieved knowledge base entries
+    or use a fallback if no text is found.
+    """
+    try:
+        query = " ".join(conditions).strip()
+        if not query:
+            logger.warning("No conditions given for summary; returning short fallback.")
+            return "No conditions specified to generate a meaningful summary."
+
+        retrieved = retrieve_knowledge(query)
+        if retrieved.empty:
+            logger.warning("No relevant KB docs retrieved; using fallback summary.")
+            return fallback_no_retrieval_summary(patient_context, conditions)
+
+        retrieved_texts = "\n".join(
+            [str(txt) for txt in retrieved['text'].dropna().values]
+        ).strip()
+        if not retrieved_texts:
+            logger.warning("Retrieved docs are empty or contain no text. Using fallback.")
+            return fallback_no_retrieval_summary(patient_context, conditions)
+
+        prompt = f"""
+            The patient context is: {patient_context}
+            Conditions of interest: {', '.join(conditions)}
+            Knowledge base excerpts:
+            {retrieved_texts}
+
+            Please provide a structured summary with:
+            1) Common complications.
+            2) Recommended follow-up or interventions.
+            3) Potential interactions between these conditions.
+            4) Relevance to 30-day readmission.
+            """
+
+        summary = run_model(prompt)
+        return summary or "No summary was returned."
+    except Exception as e:
+        logger.error(f"Error during summary generation: {e}")
+        return "Could not generate a summary due to an internal error."
+
+if __name__ == "__main__":
+    # Simple test
+    patient_context = "A 65-year-old patient with 2 diagnoses"
+    conditions = ['COPD', 'asthma']
+    summary_result = generate_summary(patient_context, conditions)
+    print("Generated Summary:\n", summary_result)
+```
+
+**Explanation**:
+
+- We load the FAISS index and mapping.
+
+- We embed the query (patient conditions) and retrieve top K relevant KB entries.
+
+- We then prompt a small LLM to produce a summary integrating patient context and retrieved knowledge.
+
+### **4.12 Fusion Model**
+
+File: ```src/modeling/fusion_model.py```
+
+```python
+# src/modeling/fusion_model.py
+
+"""
+Defines the Fusion Model:
+1. Combines structured features and text embeddings.
+2. Uses fully connected layers for prediction.
+"""
+
+import torch
+import torch.nn as nn
+
+class FusionModel(nn.Module):
+    """
+    Fusion model combining structured features and text embeddings for classification.
+    """
+    def __init__(self, structured_input_dim, embedding_dim, hidden_dims, dropout_rate=0.2):
+        """
+        Args:
+            structured_input_dim (int): Number of structured input features.
+            embedding_dim (int): Size of text embedding vectors.
+            hidden_dims (list): List of hidden layer sizes for the feed-forward network.
+            dropout_rate (float): Dropout rate for regularization.
+        """
+        super(FusionModel, self).__init__()
+        
+        # Separate branches for structured and text embeddings
+        self.structured_branch = nn.Sequential(
+            nn.Linear(structured_input_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        self.text_branch = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Combined branch
+        self.combined_branch = nn.Sequential(
+            nn.Linear(2 * hidden_dims[0], hidden_dims[1]),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dims[1], 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, structured_inputs, text_embeddings):
+        """
+        Forward pass for the model.
+        
+        Args:
+            structured_inputs (torch.Tensor): Structured input features [batch_size, structured_input_dim].
+            text_embeddings (torch.Tensor): Text embeddings [batch_size, embedding_dim].
+        
+        Returns:
+            torch.Tensor: Predicted probabilities for binary classification.
+        """
+        structured_out = self.structured_branch(structured_inputs)
+        text_out = self.text_branch(text_embeddings)
+        
+        combined = torch.cat((structured_out, text_out), dim=1)
+        output = self.combined_branch(combined)
+        
+        return output
+```
+
+**Explanation**:
+
+- Here, we describe the model architecture for a Fusion model that combines both the basic structured features along with the domain-adapted embeddings to provide a better readmission score.
+
+- Seperate branches for structured features and text embeddings are maintained.
+
+- Here is how we can visualize the neural net:
+
+```mermaid
+graph TD
+    %% Input Nodes
+    A1["Structured Input<br/>(structured_input_dim)"]
+    A2["Text Embeddings<br/>(embedding_dim)"]
+    
+    %% Structured Branch
+    B1["Dense Layer<br/>(structured_input_dim → hidden_dims[0])"]
+    C1["ReLU"]
+    D1["Dropout"]
+    E1["Structured_Out"]
+    
+    %% Text Branch
+    B2["Dense Layer<br/>(embedding_dim → hidden_dims[0])"]
+    C2["ReLU"]
+    D2["Dropout"]
+    E2["Text_Out"]
+    
+    %% Combined Processing
+    F["Concatenate"]
+    G["Dense Layer<br/>(2*hidden_dims[0] → hidden_dims[1])"]
+    H["ReLU"]
+    I["Dropout"]
+    J["Dense Layer<br/>(hidden_dims[1] → 1)"]
+    K["Sigmoid"]
+    L["Output Probability"]
+    
+    %% Connections - Structured Branch
+    A1 --> B1
+    B1 --> C1
+    C1 --> D1
+    D1 --> E1
+    
+    %% Connections - Text Branch
+    A2 --> B2
+    B2 --> C2
+    C2 --> D2
+    D2 --> E2
+    
+    %% Connections - Combined Processing
+    E1 --> F
+    E2 --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+    
+    %% Styling
+    classDef input fill:#9a4,stroke:#82b366
+    classDef processing fill:#6fa8dc,stroke:#6897c7
+    classDef activation fill:#8e7cc3,stroke:#7d6dad
+    classDef output fill:#e06666,stroke:#c95151
+    
+    class A1,A2 input
+    class B1,B2,G,J processing
+    class C1,C2,H,K activation
+    class L output
+```
 
