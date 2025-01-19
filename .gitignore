@@ -1,4 +1,4 @@
 /.venv
 /data
 /fine_tuned_clinicalbert_mlm
-__pycache__/
+**/__pycache__
